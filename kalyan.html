@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kalyan Matka Predictor - Single-file</title>
+<style>
+body {
+    font-family: Inter, system-ui, Arial;
+    max-width: 1100px;
+    margin: 18px auto;
+    padding: 18px;
+    color: #0b1220;
+}
+h1 {
+    font-size: 20px;
+    margin-bottom: 6px;
+}
+.card {
+    border-radius: 10px;
+    padding: 14px;
+    margin: 10px 0;
+    background: #f7f9fb;
+    box-shadow: 0 2px 8px rgba(10,20,30,0.04);
+}
+label {
+    display: block;
+    margin: 6px 0 3px;
+    font-weight: 600;
+}
+input, select, button {
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid #d6dbe3;
+}
+button {
+    cursor: pointer;
+    background: #4f46e5;
+    color: white;
+    border: none;
+}
+button:hover {
+    background: #4338ca;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+th, td {
+    padding: 6px;
+    border-bottom: 1px solid #e6eef7;
+    text-align: left;
+}
+th {
+    background: #f1f5f9;
+    font-weight: 600;
+}
+pre {
+    background: #001f3f;
+    color: #f7fafc;
+    padding: 12px;
+    border-radius: 8px;
+    overflow: auto;
+}
+.flex {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.muted {
+    color: #546178;
+    font-size: 13px;
+}
+h3 {
+    margin-top: 0;
+}
+</style>
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body>
+
+<h1>Kalyan Matka Predictor Single-file HTML</h1>
+
+<div class="card">
+    <div class="flex">
+        <div style="flex: 1;">
+            <label>Upload Excel file (Kalyan Matka Chart.xlsx)</label>
+            <input id="fileInput" type="file" accept=".xlsx, .xls" />
+            <div class="muted">File should have: A=Date; B-D=Monday (Open, Close, Jodi); E-G=Tue; ... Q-S=Sat</div>
+        </div>
+    </div>
+    <div style="margin-top: 10px;">
+        <label>Select date to predict</label>
+        <input id="dateInput" type="date" />
+    </div>
+    <div style="margin-top: 10px;">
+        <button id="runBtn">Run Prediction</button>
+    </div>
+    <div style="margin-top:10px" class="muted">
+        This single HTML parses your workbook entirely client-side and blends exponentially weighted recency,
+        multi-window consistency, cycle-gap alignment, and open/close digit affinities for sharper predictions.
+    </div>
+</div>
+
+<div id="status" class="card muted">No file loaded.</div>
+
+<div id="results" style="display:none">
+    <div class="card">
+        <h3>Prediction Summary</h3>
+        <div id="predictionSummary"></div>
+    </div>
+    
+    <div class="card">
+        <h3>Top Jodi Details</h3>
+        <div id="topJodis"></div>
+    </div>
+    
+    <div class="card">
+        <h3>Panel Lines (Recent)</h3>
+        <div id="panelLines"></div>
+    </div>
+    
+    <div class="card">
+        <h3>Cycle Lag Summary (5,6,9,11,16,18,22 weeks)</h3>
+        <div id="lagSummary"></div>
+    </div>
+    
+    <div class="card">
+        <h3>Download CSVs</h3>
+        <div class="flex">
+            <button id="dlJodiFreq">Download jodi_freq_overall.csv</button>
+            <button id="dlWeekdayTop">Download weekday_top_jodi.csv</button>
+            <button id="dlLagSummary">Download lag_summary.csv</button>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.19.3/package/dist/xlsx.full.min.js"></script>
+<script>
+const targetLags = [5, 6, 9, 11, 16, 18, 22];
+const decayWindows = [7, 15, 30, 60, 120];
+const hotOpenDigits = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+function sumDigitsLast(totalStr) {
+    const s = String(totalStr || '');
+    let sum = 0;
+    let found = false;
+    for (let ch of s) {
+        if (/\d/.test(ch)) {
+            sum += parseInt(ch);
+            found = true;
+        }
+    }
+    if (!found) return null;
+    return sum % 10;
+}
+
+function normalizeJodi(val) {
+    if (val == null) return null;
+    const s = String(val).trim();
+    const digits = s.replace(/\D/g, '');
+    if (digits.length === 0) return null;
+    if (digits.length === 1) return '0' + digits;
+    return digits.slice(-2);
+}
+
+function arrayToCSV(arr) {
+    if (!arr.length) return '';
+    const keys = Object.keys(arr[0]);
+    const lines = [keys.join(',')];
+    for (const r of arr) {
+        lines.push(keys.map(k => {
+            const val = (r[k] === undefined || r[k] === null) ? '' : r[k];
+            return '"' + String(val).replace(/"/g, '""') + '"';
+        }).join(','));
+    }
+    return lines.join('\n');
+}
+
+let workbookData = null;
+let longRecords = [];
+const weekdayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const historicalStatsByWeekday = new Map();
+
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    document.getElementById('status').innerText = 'Reading file...';
+    const data = await f.arrayBuffer();
+    const wb = XLSX.read(data, {type: 'array'});
+    workbookData = wb;
+    document.getElementById('status').innerText = 'File loaded. Sheets: ' + wb.SheetNames.join(', ');
+    parseWorkbookFirstSheet(wb);
+});
+
+function parseWorkbookFirstSheet(wb) {
+    const name = wb.SheetNames[0];
+    const ws = wb.Sheets[name];
+    // Convert to array of arrays (no headers)
+    const aoa = XLSX.utils.sheet_to_json(ws, {header: 1, raw: false, dateNF: 'dd-mm-yyyy'});
+    longRecords = [];
+    historicalStatsByWeekday.clear();
+    
+    for (let r = 0; r < aoa.length; r++) {
+        const row = aoa[r];
+        if (!row || !row.length) continue;
+        
+        let dateCell = row[0];
+        let dateObj = null;
+        
+        if (dateCell instanceof Date) {
+            dateObj = dateCell;
+        } else if (typeof dateCell === 'string' && dateCell.trim() !== '') {
+            const parts = dateCell.trim().split(/[\/\-]/);
+            if (parts.length === 3 && parts[2].length === 4) {
+                const d = parseInt(parts[0], 10);
+                const m = parseInt(parts[1], 10) - 1;
+                const y = parseInt(parts[2], 10);
+                dateObj = new Date(y, m, d);
+            } else {
+                const d2 = new Date(dateCell);
+                if (!isNaN(d2)) dateObj = d2;
+            }
+        }
+        
+        if (!dateObj) continue;
+        
+        for (let i = 0; i < 6; i++) {
+            const openCol = 1 + i * 3;
+            const closeCol = 2 + i * 3;
+            const jodiCol = 3 + i * 3;
+            
+            if (jodiCol >= row.length) continue;
+            
+            const openRaw = row[openCol];
+            const closeRaw = row[closeCol];
+            const jodiRaw = row[jodiCol];
+            const jodi = normalizeJodi(jodiRaw);
+            
+            if (!jodi) continue;
+            
+            const openTotal = sumDigitsLast(openRaw);
+            const closeTotal = sumDigitsLast(closeRaw);
+            
+            const record = {
+                date: new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()),
+                weekday_idx: i,
+                open_raw: openRaw || '',
+                close_raw: closeRaw || '',
+                open_total: openTotal,
+                close_total: closeTotal,
+                jodi: jodi
+            };
+            longRecords.push(record);
+            if (!historicalStatsByWeekday.has(i)) {
+                historicalStatsByWeekday.set(i, []);
+            }
+            historicalStatsByWeekday.get(i).push(record);
+        }
+    }
+    
+    document.getElementById('status').innerText = `Parsed ${longRecords.length} game records (rows with jodi).`;
+    
+    if (longRecords.length) {
+        const lastDate = longRecords.reduce((a, b) => a.date > b.date ? a : b).date;
+        const next = new Date(lastDate);
+        next.setDate(next.getDate() + 1);
+        document.getElementById('dateInput').value = next.toISOString().slice(0, 10);
+    }
+}
+
+function computePredictionForDate(predDate) {
+    const d = new Date(predDate);
+    const wd = d.getDay();
+    const wdMap = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5};
+    
+    if (!(wd in wdMap)) {
+        return {error: 'Selected date is Sunday - no game. Choose Mon-Sat.'};
+    }
+    
+    const weekdayIdx = wdMap[wd];
+    const weekday = weekdayNames[weekdayIdx];
+    const hist = (historicalStatsByWeekday.get(weekdayIdx) || []).slice().sort((a, b) => a.date - b.date);
+    
+    if (hist.length === 0) return {error: 'No historical data for this weekday.'};
+    
+    const last22 = hist.slice(Math.max(0, hist.length - 22));
+    const freqRecent = {};
+    const freqOverall = {};
+    const EWMAWeights = buildEwmaWeights(hist.length);
+    const recencyScores = {};
+    const stabilityScores = {};
+    const cadenceScore = {};
+
+    for (let idx = 0; idx < hist.length; idx++) {
+        const r = hist[idx];
+        freqOverall[r.jodi] = (freqOverall[r.jodi] || 0) + 1;
+        const w = EWMAWeights[idx];
+        recencyScores[r.jodi] = (recencyScores[r.jodi] || 0) + w;
+    }
+    for (const r of last22) {
+        freqRecent[r.jodi] = (freqRecent[r.jodi] || 0) + 1;
+    }
+    
+    const cycleRecords = [];
+    const byJodi = {};
+    hist.forEach(r => {
+        byJodi[r.jodi] = byJodi[r.jodi] || [];
+        byJodi[r.jodi].push(r.date);
+    });
+
+    const lagCounts = {};
+    const totalLagBonus = {};
+
+    for (const j in byJodi) {
+        const dates = byJodi[j].slice().sort((a, b) => a - b);
+        for (let i = 1; i < dates.length; i++) {
+            const diffWeeks = Math.floor((dates[i] - dates[i - 1]) / (7 * 24 * 3600 * 1000));
+            cycleRecords.push({jodi: j, prev: dates[i - 1], cur: dates[i], weeks: diffWeeks});
+            for (const lag of targetLags) {
+                if (!lagCounts[lag]) lagCounts[lag] = 0;
+                if (diffWeeks === lag) {
+                    lagCounts[lag] += 1;
+                    totalLagBonus[j] = (totalLagBonus[j] || 0) + 1;
+                }
+            }
+        }
+    }
+    
+    const candidates = [];
+    const allJodis = new Set([...Object.keys(freqOverall), ...Object.keys(freqRecent), ...Object.keys(recencyScores)]);
+
+    const openDigitAffinity = buildDigitAffinity(hist, 'open_total');
+    const closeDigitAffinity = buildDigitAffinity(hist, 'close_total');
+    const weekdayCadence = buildWeekdayCadence(byJodi, weekdayIdx);
+
+    for (const j of allJodis) {
+        const recent = freqRecent[j] || 0;
+        const overall = freqOverall[j] || 0;
+        const recency = recencyScores[j] || 0;
+        const lagBonus = totalLagBonus[j] || 0;
+        const openAffinity = openDigitAffinity[j] || 0;
+        const closeAffinity = closeDigitAffinity[j] || 0;
+        const cadence = weekdayCadence[j] || 0;
+
+        const score = recent * 2.5 + overall * 1.2 + recency * 3.5 + lagBonus * 2.2 + openAffinity * 1.3 + closeAffinity * 1.3 + cadence * 1.7;
+        candidates.push({
+            jodi: j,
+            recent: Number(recent.toFixed(2)),
+            overall: Number(overall.toFixed(2)),
+            recency: Number(recency.toFixed(2)),
+            lagBonus: Number(lagBonus.toFixed(2)),
+            openAffinity: Number(openAffinity.toFixed(2)),
+            closeAffinity: Number(closeAffinity.toFixed(2)),
+            cadence: Number(cadence.toFixed(2)),
+            score: Number(score.toFixed(2))
+        });
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    
+    const top3 = candidates.slice(0, 3).map(x => x.jodi);
+    const openTotalsCount = {};
+    const closeTotalsCount = {};
+    
+    for (const r of last22) {
+        if (r.open_total !== null) openTotalsCount[r.open_total] = (openTotalsCount[r.open_total] || 0) + 1;
+        if (r.close_total !== null) closeTotalsCount[r.close_total] = (closeTotalsCount[r.close_total] || 0) + 1;
+    }
+    
+    const openTop = Object.keys(openTotalsCount).sort((a, b) => openTotalsCount[b] - openTotalsCount[a]).slice(0, 3);
+    const closeTop = Object.keys(closeTotalsCount).sort((a, b) => closeTotalsCount[b] - closeTotalsCount[a]).slice(0, 3);
+    
+    const panelLines = {};
+    for (const j of top3) {
+        panelLines[j] = [];
+    }
+    
+    for (const r of hist.slice(-200)) {
+        if (top3.includes(r.jodi)) {
+            panelLines[r.jodi].push({
+                open_raw: r.open_raw,
+                close_raw: r.close_raw,
+                open_total: r.open_total,
+                close_total: r.close_total,
+                date: r.date.toISOString().slice(0, 10)
+            });
+        }
+    }
+    
+    const panelSuggestions = {};
+    for (const j of top3) {
+        const arr = panelLines[j] || [];
+        const openSet = new Set();
+        const closeSet = new Set();
+        for (const e of arr) {
+            if (e.open_raw) openSet.add(String(e.open_raw));
+            if (e.close_raw) closeSet.add(String(e.close_raw));
+        }
+        panelSuggestions[j] = {
+            recent_open: Array.from(openSet).slice(0, 6),
+            recent_close: Array.from(closeSet).slice(0, 6)
+        };
+    }
+    
+    return {
+        prediction_date: (new Date(predDate)).toISOString().slice(0, 10),
+        weekday: weekday,
+        top3: top3,
+        candidates: candidates.slice(0, 30),
+        open_top: openTop,
+        close_top: closeTop,
+        lagCounts: lagCounts,
+        panelSuggestions: panelSuggestions
+    };
+}
+
+function buildEwmaWeights(length) {
+    if (length === 0) return [];
+    const weights = new Array(length).fill(0);
+    const base = 0.65;
+    let current = 1;
+    let sum = 0;
+    for (let i = length - 1; i >= 0; i--) {
+        weights[i] = current;
+        sum += current;
+        current *= base;
+    }
+    return weights.map(w => w / sum);
+}
+
+function buildDigitAffinity(records, key) {
+    const digitCountsByJodi = {};
+    const globalDigitCounts = {};
+    const totalByJodi = {};
+    const epsilon = 1e-6;
+
+    for (const r of records) {
+        const jodi = r.jodi;
+        const val = r[key];
+        if (val === null || val === undefined) continue;
+        const digit = parseInt(val, 10);
+        if (isNaN(digit)) continue;
+        if (!digitCountsByJodi[jodi]) digitCountsByJodi[jodi] = {};
+        digitCountsByJodi[jodi][digit] = (digitCountsByJodi[jodi][digit] || 0) + 1;
+        globalDigitCounts[digit] = (globalDigitCounts[digit] || 0) + 1;
+        totalByJodi[jodi] = (totalByJodi[jodi] || 0) + 1;
+    }
+
+    const result = {};
+    const totalGlobal = Object.values(globalDigitCounts).reduce((a, b) => a + b, 0) + epsilon;
+
+    for (const j in digitCountsByJodi) {
+        const total = totalByJodi[j] || 0;
+        if (total === 0) continue;
+        let affinity = 0;
+        for (const digit of hotOpenDigits) {
+            const observed = digitCountsByJodi[j][digit] || 0;
+            const expected = ((globalDigitCounts[digit] || 0) + epsilon) * (total / totalGlobal);
+            affinity += (observed - expected) / (Math.sqrt(expected) + epsilon);
+        }
+        result[j] = affinity;
+    }
+    return result;
+}
+
+function buildWeekdayCadence(byJodi, weekdayIdx) {
+    const cadence = {};
+    const periodWindows = decayWindows;
+    const today = new Date();
+    const epsilon = 1e-6;
+
+    for (const j in byJodi) {
+        const dates = byJodi[j].slice().sort((a, b) => a - b);
+        if (dates.length < 2) {
+            cadence[j] = 0;
+            continue;
+        }
+        let score = 0;
+        for (let i = 1; i < dates.length; i++) {
+            const gapDays = Math.abs((dates[i] - dates[i - 1]) / (24 * 3600 * 1000));
+            for (const window of periodWindows) {
+                const weight = Math.exp(-gapDays / (window * 0.9));
+                score += weight;
+            }
+        }
+    const recencyBoost = Math.exp(-Math.abs((today - dates[dates.length - 1]) / (24 * 3600 * 1000)) / 90);
+        cadence[j] = score * recencyBoost + epsilon;
+    }
+    return cadence;
+}
+
+document.getElementById('runBtn').addEventListener('click', () => {
+    const fileLoaded = workbookData !== null;
+    if (!fileLoaded) {
+        alert('Please upload your Excel file first.');
+        return;
+    }
+    
+    const dateVal = document.getElementById('dateInput').value;
+    if (!dateVal) {
+        alert('Select a date.');
+        return;
+    }
+    
+    const res = computePredictionForDate(dateVal);
+    if (res.error) {
+        alert(res.error);
+        return;
+    }
+    
+    document.getElementById('results').style.display = 'block';
+    
+    const sum = document.getElementById('predictionSummary');
+    sum.innerHTML = `<b>Prediction for ${res.prediction_date} (${res.weekday})</b><br>Top 3 Jodis: ${res.top3.join(', ')}`;
+    
+    const tj = document.getElementById('topJodis');
+    let html = '<table><tr><th>Rank</th><th>Jodi</th><th>RecentCount</th><th>OverallCount</th><th>LagBonus</th><th>Score</th></tr>';
+    for (let i = 0; i < Math.min(20, res.candidates.length); i++) {
+        const c = res.candidates[i];
+        html += `<tr><td>${i + 1}</td><td>${c.jodi}</td><td>${c.recent}</td><td>${c.overall}</td><td>${c.lagBonus}</td><td>${c.score}</td></tr>`;
+    }
+    html += '</table>';
+    tj.innerHTML = html;
+    
+    const pl = document.getElementById('panelLines');
+    let plHtml = '';
+    for (const j of res.top3) {
+        plHtml += `<h4>Jodi ${j}</h4>`;
+        plHtml += `<div><b>Recent Open Panels:</b> ${res.panelSuggestions[j].recent_open.join(', ') || 'N/A'}</div>`;
+        plHtml += `<div><b>Recent Close Panels:</b> ${res.panelSuggestions[j].recent_close.join(', ') || 'N/A'}</div>`;
+    }
+    pl.innerHTML = plHtml;
+    
+    const lagEl = document.getElementById('lagSummary');
+    lagEl.innerHTML = '<table><tr><th>Lag (weeks)</th><th>Count</th></tr>' + 
+        Object.keys(res.lagCounts).map(k => `<tr><td>${k}</td><td>${res.lagCounts[k]}</td></tr>`).join('') + 
+        '</table>';
+    
+    const jodiFreqOverall = res.candidates.map(x => ({jodi: x.jodi, recent: x.recent, overall: x.overall, score: x.score}));
+    
+    const weekdayTopRows = [];
+    for (let wi = 0; wi < 6; wi++) {
+        const arr = longRecords.filter(r => r.weekday_idx === wi);
+        const counts = {};
+        for (const a of arr) counts[a.jodi] = (counts[a.jodi] || 0) + 1;
+        const sorted = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 50);
+        for (const j of sorted) {
+            weekdayTopRows.push({weekday: weekdayNames[wi], jodi: j, count: counts[j]});
+        }
+    }
+    
+    const lagSummaryRows = Object.keys(res.lagCounts).map(k => ({lag_weeks: k, count: res.lagCounts[k]}));
+
+    const enriched = res.candidates.map(x => ({
+        jodi: x.jodi,
+        recent: x.recent,
+        overall: x.overall,
+        recency: x.recency,
+        lagBonus: x.lagBonus,
+        openAffinity: x.openAffinity,
+        closeAffinity: x.closeAffinity,
+        cadence: x.cadence,
+        score: x.score
+    }));
+
+    const csv1 = arrayToCSV(enriched);
+    const csv2 = arrayToCSV(weekdayTopRows);
+    const csv3 = arrayToCSV(lagSummaryRows);
+    
+    window._csv_blobs = {csv1: csv1, csv2: csv2, csv3: csv3};
+});
+
+document.getElementById('dlJodiFreq').addEventListener('click', () => {
+    if (window._csv_blobs) downloadText(window._csv_blobs.csv1, 'jodi_freq_overall.csv');
+});
+
+document.getElementById('dlWeekdayTop').addEventListener('click', () => {
+    if (window._csv_blobs) downloadText(window._csv_blobs.csv2, 'weekday_top_jodi.csv');
+});
+
+document.getElementById('dlLagSummary').addEventListener('click', () => {
+    if (window._csv_blobs) downloadText(window._csv_blobs.csv3, 'lag_summary.csv');
+});
+
+function downloadText(text, filename) {
+    const blob = new Blob([text], {type: 'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
